@@ -188,10 +188,13 @@ PWDFILE="${workdir}/pwd"
 echo -n "password" > "${PWDFILE}"
 rm -f "${workdir}/logfile"
 
+for curve_key_size in 256 384
+do
 for pwdfile in "" "${PWDFILE}"; do
 	if ! ${SWTPM_SETUP} \
 		--tpm2 \
 		--ecc \
+                --ecc-curve secp${curve_key_size}r1 \
 		--tpm-state "${workdir}" \
 		--create-ek-cert \
 		--create-platform-cert \
@@ -222,20 +225,21 @@ for pwdfile in "" "${PWDFILE}"; do
 		exit 1
 	fi
 
-	certfile="${workdir}/ek-secp384r1.crt"
+	certfile="${workdir}/ek-secp${curve_key_size}r1.crt"
 	if [ ! -f "${certfile}" ]; then
 		echo "Error: EK file '${certfile}' was not written."
 		ls -l "${workdir}"
 		exit 1
 	fi
 
-	if ! $CERTTOOL --inder --infile "${certfile}" -i | grep -q "384 bits"; then
-		echo "Error: EK file '${certfile}' is not an ECC 384 bit key."
+	if ! $CERTTOOL --inder --infile "${certfile}" -i | grep -q "${curve_key_size} bits"; then
+		echo "Error: EK file '${certfile}' is not an ECC ${curve_key_size} bit key."
 		$CERTTOOL --inder --infile "${certfile}" -i
 		exit 1
 	fi
 
 	swtpm_setup_reconfigure "${workdir}" "${pwdfile}"
+done
 done
 
 echo "Test 2: OK"

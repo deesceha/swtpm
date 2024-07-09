@@ -45,8 +45,8 @@ struct swtpm12_ops {
 /* TPM 2 specific ops */
 struct swtpm2_ops {
     int (*shutdown)(struct swtpm *);
-    int (*create_spk)(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize);
-    int (*create_ek)(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize,
+    int (*create_spk)(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize, unsigned short ecc_curve_id);
+    int (*create_ek)(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize, unsigned short ecc_curve_id,
                      gboolean allowsigning, gboolean decryption, gboolean lock_nvram,
                      gchar **ekparam, const gchar **key_description);
     int (*get_all_pcr_banks)(struct swtpm *self, gchar ***all_pcr_banks);

@@ -391,6 +391,7 @@ static const struct swtpm_cops swtpm_cops = {
 
 #define TPM2_CAP_PCRS     0x00000005
 
+#define TPM2_ECC_NIST_P256 0x0003
 #define TPM2_ECC_NIST_P384 0x0004
 
 #define TPMA_NV_PLATFORMCREATE 0x40000000
@@ -412,11 +413,16 @@ static const struct swtpm_cops swtpm_cops = {
 // Specification Version 2.1; Revision 13; 10 December 2018
 #define TPM2_NV_INDEX_PLATFORMCERT           0x01c08000
 
+
+#define TPM2_NV_INDEX_ECC_SECP256R1_HI_EKCERT     0x01c00014
+#define TPM2_NV_INDEX_ECC_SECP256R1_HI_EKTEMPLATE 0x01c00015
+
 #define TPM2_NV_INDEX_ECC_SECP384R1_HI_EKCERT     0x01c00016
 #define TPM2_NV_INDEX_ECC_SECP384R1_HI_EKTEMPLATE 0x01c00017
 
 #define TPM2_EK_RSA_HANDLE           0x81010001
 #define TPM2_EK_RSA3072_HANDLE       0x8101001c
+#define TPM2_EK_ECC_SECP256R1_HANDLE 0x81010014
 #define TPM2_EK_ECC_SECP384R1_HANDLE 0x81010016
 #define TPM2_SPK_HANDLE              0x81000001
 
@@ -449,7 +455,7 @@ struct tpm2_authblock {
 static const unsigned char NONCE_EMPTY[2] = {AS2BE(0)};
 static const unsigned char NONCE_RSA2048[2+0x100] = {AS2BE(0x100), 0, };
 static const unsigned char NONCE_RSA3072[2+0x180] = {AS2BE(0x180), 0, };
-static const unsigned char NONCE_ECC_384[2+0x30] = {AS2BE(0x30), 0, };
+static const unsigned char NONCE_ECC[2+0x30] = {AS2BE(0x30), 0, };
 
 static const struct bank_to_name {
     uint16_t hashAlg;
@@ -1019,12 +1025,19 @@ static int swtpm_tpm2_createprimary_ecc(struct swtpm *self, uint32_t primaryhand
         *curr_handle = be32toh(*curr_handle);
     }
 
-    if (curveid == TPM2_ECC_NIST_P384) {
+    if (curveid == TPM2_ECC_NIST_P256) {
+        exp_ksize = 32;
+        cid = "secp256r1";
+        if (key_description)
+            *key_description = cid;
+    } 
+    else if (curveid == TPM2_ECC_NIST_P384) {
         exp_ksize = 48;
         cid = "secp384r1";
         if (key_description)
             *key_description = cid;
-    } else {
+    }
+    else {
         logerr(self->logfile, "Unknown curveid 0x%x\n", curveid);
         return 1;
     }
@@ -1063,8 +1076,9 @@ err_too_short:
     return 1;
 }
 
-static int swtpm_tpm2_createprimary_spk_ecc_nist_p384(struct swtpm *self,
-                                                      uint32_t *curr_handle)
+static int swtpm_tpm2_createprimary_spk_ecc(struct swtpm *self,
+                                            uint32_t *curr_handle,
+                                            unsigned int ecc_curve_id)
 {
     unsigned int keyflags = 0x00030472;
     const unsigned char authpolicy[0];
@@ -1072,15 +1086,15 @@ static int swtpm_tpm2_createprimary_spk_ecc_nist_p384(struct swtpm *self,
     const unsigned char symkeydata[] = {AS2BE(TPM2_ALG_AES), AS2BE(256), AS2BE(TPM2_ALG_CFB)};
     size_t symkeydata_len = sizeof(symkeydata);
     const unsigned char schemedata[] = {
-        AS2BE(TPM2_ALG_NULL), AS2BE(TPM2_ECC_NIST_P384), AS2BE(TPM2_ALG_NULL)
+        AS2BE(TPM2_ALG_NULL), AS2BE(ecc_curve_id), AS2BE(TPM2_ALG_NULL)
     };
     size_t schemedata_len = sizeof(schemedata);
     size_t off = 42;
 
     return swtpm_tpm2_createprimary_ecc(self, TPM2_RH_OWNER, keyflags, symkeydata, symkeydata_len,
                                         authpolicy, authpolicy_len, schemedata, schemedata_len,
-                                        TPM2_ECC_NIST_P384, TPM2_ALG_SHA384,
-                                        NONCE_ECC_384, sizeof(NONCE_ECC_384), off, curr_handle,
+                                        ecc_curve_id, TPM2_ALG_SHA384,
+                                        NONCE_ECC, sizeof(NONCE_ECC), off, curr_handle,
                                         NULL, 0, NULL, NULL);
 }
 
@@ -1112,13 +1126,13 @@ static int swtpm_tpm2_createprimary_spk_rsa(struct swtpm *self, unsigned int rsa
 }
 
 /* Create either an ECC or RSA storage primary key */
-static int swtpm_tpm2_create_spk(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize)
+static int swtpm_tpm2_create_spk(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize, unsigned short ecc_curve_id)
 {
     int ret;
     uint32_t curr_handle;
 
-    if (isecc)
-        ret = swtpm_tpm2_createprimary_spk_ecc_nist_p384(self, &curr_handle);
+    if (isecc) 
+        ret = swtpm_tpm2_createprimary_spk_ecc(self, &curr_handle, ecc_curve_id);
     else
         ret = swtpm_tpm2_createprimary_spk_rsa(self, rsa_keysize, &curr_handle);
 
@@ -1140,10 +1154,11 @@ static int swtpm_tpm2_create_spk(struct swtpm *self, gboolean isecc, unsigned in
 }
 
 /* Create an ECC EK key that may be allowed to sign and/or decrypt */
-static int swtpm_tpm2_createprimary_ek_ecc_nist_p384(struct swtpm *self, gboolean allowsigning,
+static int swtpm_tpm2_createprimary_ek_ecc(struct swtpm *self, gboolean allowsigning,
                                                      gboolean decryption, uint32_t *curr_handle,
                                                      unsigned char *ektemplate, size_t *ektemplate_len,
-                                                     gchar **ekparam, const char **key_description)
+                                                     gchar **ekparam, const char **key_description, 
+                                                     unsigned short ecc_curve_id)
 {
     unsigned char authpolicy[48]= {
         0xB2, 0x6E, 0x7D, 0x28, 0xD1, 0x1A, 0x50, 0xBC, 0x53, 0xD8, 0x82, 0xBC,
@@ -1152,7 +1167,7 @@ static int swtpm_tpm2_createprimary_ek_ecc_nist_p384(struct swtpm *self, gboolea
         0x69, 0x96, 0x46, 0x15, 0x0F, 0x9F, 0xC0, 0x00, 0xF3, 0xF8, 0x0E, 0x12
     };
     const unsigned char schemedata[] = {
-        AS2BE(TPM2_ALG_NULL), AS2BE(TPM2_ECC_NIST_P384), AS2BE(TPM2_ALG_NULL)
+        AS2BE(TPM2_ALG_NULL), AS2BE(ecc_curve_id), AS2BE(TPM2_ALG_NULL)
     };
     size_t schemedata_len = sizeof(schemedata);
     size_t authpolicy_len = 48;
@@ -1194,7 +1209,7 @@ static int swtpm_tpm2_createprimary_ek_ecc_nist_p384(struct swtpm *self, gboolea
                                        symkeydata, symkeydata_len,
                                        authpolicy, authpolicy_len,
                                        schemedata, schemedata_len,
-                                       TPM2_ECC_NIST_P384, TPM2_ALG_SHA384,
+                                       ecc_curve_id, TPM2_ALG_SHA384,
                                        NONCE_EMPTY, sizeof(NONCE_EMPTY), off, curr_handle,
                                        ektemplate, ektemplate_len, ekparam, key_description);
     if (ret != 0)
@@ -1204,7 +1219,7 @@ static int swtpm_tpm2_createprimary_ek_ecc_nist_p384(struct swtpm *self, gboolea
 }
 
 /* Create an ECC or RSA EK */
-static int swtpm_tpm2_create_ek(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize,
+static int swtpm_tpm2_create_ek(struct swtpm *self, gboolean isecc, unsigned int rsa_keysize, unsigned short ecc_curve_id,
                                 gboolean allowsigning, gboolean decryption, gboolean lock_nvram,
                                 gchar **ekparam, const  gchar **key_description)
 {
@@ -1215,9 +1230,16 @@ static int swtpm_tpm2_create_ek(struct swtpm *self, gboolean isecc, unsigned int
     size_t ektemplate_len = sizeof(ektemplate);
 
     if (isecc) {
-        tpm2_ek_handle = TPM2_EK_ECC_SECP384R1_HANDLE;
-        keytype = "ECC";
-        nvindex = TPM2_NV_INDEX_ECC_SECP384R1_HI_EKTEMPLATE;
+        if (ecc_curve_id==TPM2_ECC_NIST_P256) {
+            tpm2_ek_handle = TPM2_EK_ECC_SECP256R1_HANDLE;
+            keytype = "ECC";
+            nvindex = TPM2_NV_INDEX_ECC_SECP256R1_HI_EKTEMPLATE;
+        }
+        else if (ecc_curve_id==TPM2_ECC_NIST_P384) {
+            tpm2_ek_handle = TPM2_EK_ECC_SECP384R1_HANDLE;
+            keytype = "ECC";
+            nvindex = TPM2_NV_INDEX_ECC_SECP384R1_HI_EKTEMPLATE;
+        }
     } else {
         if (rsa_keysize == 2048) {
             tpm2_ek_handle = TPM2_EK_RSA_HANDLE;
@@ -1232,10 +1254,11 @@ static int swtpm_tpm2_create_ek(struct swtpm *self, gboolean isecc, unsigned int
             return 1;
         }
     }
-    if (isecc)
-        ret = swtpm_tpm2_createprimary_ek_ecc_nist_p384(self, allowsigning, decryption, &curr_handle,
-                                                        ektemplate, &ektemplate_len, ekparam,
-                                                        key_description);
+    if (isecc) 
+        ret = swtpm_tpm2_createprimary_ek_ecc(self, allowsigning, decryption, &curr_handle,
+                                                    ektemplate, &ektemplate_len, ekparam,
+                                                    key_description, ecc_curve_id);
+
     else
         ret = swtpm_tpm2_createprimary_ek_rsa(self, rsa_keysize, allowsigning, decryption, &curr_handle,
                                               ektemplate, &ektemplate_len, ekparam, key_description);

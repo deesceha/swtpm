@@ -68,7 +68,9 @@
 gchar *gl_LOGFILE = NULL;
 
 #define DEFAULT_RSA_KEYSIZE 2048
-
+#define DEFAULT_ECC_CURVE "secp256r1"
+#define ECC_CURVE_ID_NIST_P256 0x0003
+#define ECC_CURVE_ID_NIST_P384 0x0004
 
 static const struct flag_to_certfile {
     unsigned long flag;
@@ -363,7 +365,7 @@ static int read_certificate_file(const gchar *certsdir, const gchar *filename,
  */
 static int tpm2_persist_certificate(unsigned long flags, const gchar *certsdir,
                                     const struct flag_to_certfile *ftc,
-                                    unsigned int rsa_keysize, struct swtpm2 *swtpm2,
+                                    unsigned int rsa_keysize, unsigned short ecc_curve_id, struct swtpm2 *swtpm2,
                                     const gchar *user_certsdir, const gchar *key_type,
                                     const gchar *key_description)
 {
@@ -403,7 +405,7 @@ error_unlink:
 /* Create EK and certificate for a TPM 2 */
 static int tpm2_create_ek_and_cert(unsigned long flags, const gchar *config_file,
                                    const gchar *certsdir, const gchar *vmid,
-                                   unsigned int rsa_keysize, struct swtpm2 *swtpm2,
+                                   unsigned int rsa_keysize, unsigned short ecc_curve_id, struct swtpm2 *swtpm2,
                                    const gchar *user_certsdir)
 {
     g_autofree gchar *ekparam = NULL;
@@ -414,7 +416,7 @@ static int tpm2_create_ek_and_cert(unsigned long flags, const gchar *config_file
     int ret;
 
     if (flags & SETUP_CREATE_EK_F) {
-        ret = swtpm2->ops->create_ek(&swtpm2->swtpm, !!(flags & SETUP_TPM2_ECC_F), rsa_keysize,
+        ret = swtpm2->ops->create_ek(&swtpm2->swtpm, !!(flags & SETUP_TPM2_ECC_F), rsa_keysize, ecc_curve_id,
                                      !!(flags & SETUP_ALLOW_SIGNING_F),
                                      !!(flags & SETUP_DECRYPTION_F),
                                      !!(flags & SETUP_LOCK_NVRAM_F),
@@ -436,7 +438,7 @@ static int tpm2_create_ek_and_cert(unsigned long flags, const gchar *config_file
                 key_type = flags_to_certfiles[idx].flag & SETUP_EK_CERT_F ? "ek" : "";
 
                 ret = tpm2_persist_certificate(flags, certsdir, &flags_to_certfiles[idx],
-                                               rsa_keysize, swtpm2, user_certsdir,
+                                               rsa_keysize, ecc_curve_id, swtpm2, user_certsdir,
                                                key_type, key_description);
                 if (ret)
                     return 1;
@@ -450,21 +452,21 @@ static int tpm2_create_ek_and_cert(unsigned long flags, const gchar *config_file
 /* Create endorsement keys and certificates for a TPM 2 */
 static int tpm2_create_eks_and_certs(unsigned long flags, const gchar *config_file,
                                      const gchar *certsdir, const gchar *vmid,
-                                     unsigned int rsa_keysize, struct swtpm2 *swtpm2,
+                                     unsigned int rsa_keysize, unsigned short ecc_curve_id, struct swtpm2 *swtpm2,
                                      const gchar *user_certsdir)
 {
      int ret;
 
      /* 1st key will be RSA */
      flags = flags & ~SETUP_TPM2_ECC_F;
-     ret = tpm2_create_ek_and_cert(flags, config_file, certsdir, vmid, rsa_keysize, swtpm2,
+     ret = tpm2_create_ek_and_cert(flags, config_file, certsdir, vmid, rsa_keysize, ecc_curve_id, swtpm2,
                                    user_certsdir);
      if (ret != 0)
          return 1;
 
      /* 2nd key will be an ECC; no more platform cert */
      flags = (flags & ~SETUP_PLATFORM_CERT_F) | SETUP_TPM2_ECC_F;
-     return tpm2_create_ek_and_cert(flags, config_file, certsdir, vmid, rsa_keysize, swtpm2,
+     return tpm2_create_ek_and_cert(flags, config_file, certsdir, vmid, rsa_keysize, ecc_curve_id, swtpm2,
                                     user_certsdir);
 }
 
@@ -530,7 +532,7 @@ static int tpm2_activate_pcr_banks(struct swtpm2 *swtpm2,
 static int init_tpm2(unsigned long flags, gchar **swtpm_prg_l, const gchar *config_file,
                      const gchar *tpm2_state_path, const gchar *vmid, const gchar *pcr_banks,
                      const gchar *swtpm_keyopt, int *fds_to_pass, size_t n_fds_to_pass,
-                     unsigned int rsa_keysize, const gchar *certsdir,
+                     unsigned int rsa_keysize, unsigned short ecc_curve_id, const gchar *certsdir,
                      const gchar *user_certsdir)
 {
     struct swtpm2 *swtpm2;
@@ -551,12 +553,12 @@ static int init_tpm2(unsigned long flags, gchar **swtpm_prg_l, const gchar *conf
 
     if (!(flags & SETUP_RECONFIGURE_F)) {
         if ((flags & SETUP_CREATE_SPK_F)) {
-            ret = swtpm2->ops->create_spk(swtpm, !!(flags & SETUP_TPM2_ECC_F), rsa_keysize);
+            ret = swtpm2->ops->create_spk(swtpm, !!(flags & SETUP_TPM2_ECC_F), rsa_keysize, ecc_curve_id);
             if (ret != 0)
                 goto destroy;
         }
 
-        ret = tpm2_create_eks_and_certs(flags, config_file, certsdir, vmid, rsa_keysize, swtpm2,
+        ret = tpm2_create_eks_and_certs(flags, config_file, certsdir, vmid, rsa_keysize, ecc_curve_id, swtpm2,
                                         user_certsdir);
         if (ret != 0)
             goto destroy;
@@ -872,6 +874,9 @@ static void usage(const char *prgname, const char *default_config_file)
         "--ecc            : This option allows to create a TPM 2's ECC key as storage\n"
         "                   primary key; a TPM 2 always gets an RSA and an ECC EK key.\n"
         "\n"
+        "--ecc-curve <curve>\n"
+        "                 : The ECC curve of the EK key (secp256r1 or secp384r1)\n"
+        "                   Default: %s\n"
         "--take-ownership : Take ownership; this option implies --createek\n"
         "  --ownerpass  <password>\n"
         "                 : Provide custom owner password; default is %s\n"
@@ -965,6 +970,7 @@ static void usage(const char *prgname, const char *default_config_file)
         "\n"
         "--help,-h        : Display this help screen\n\n",
             prgname,
+            DEFAULT_ECC_CURVE,
             DEFAULT_OWNER_PASSWORD,
             DEFAULT_SRK_PASSWORD,
             default_config_file,
@@ -1195,6 +1201,7 @@ int main(int argc, char *argv[])
         {"swtpm_ioctl", required_argument, NULL, '_'},
         {"tpm2", no_argument, NULL, '2'},
         {"ecc", no_argument, NULL, 'e'},
+        {"ecc-curve", required_argument, NULL, 'Q'},
         {"createek", no_argument, NULL, 'c'},
         {"create-spk", no_argument, NULL, 'C'},
         {"take-ownership", no_argument, NULL, 'o'},
@@ -1249,7 +1256,9 @@ int main(int argc, char *argv[])
     long int pwdfile_fd = -1;
     g_autofree gchar *cipher = g_strdup("aes-128-cbc");
     g_autofree gchar *rsa_keysize_str = g_strdup_printf("%d", DEFAULT_RSA_KEYSIZE);
+    g_autofree gchar *ecc_curve_str = g_strdup_printf("%s", DEFAULT_ECC_CURVE);
     unsigned int rsa_keysize;
+    unsigned short ecc_curve;
     g_autofree gchar *swtpm_keyopt = NULL;
     g_autofree gchar *runas = NULL;
     g_autofree gchar *certsdir = NULL;
@@ -1414,6 +1423,10 @@ int main(int argc, char *argv[])
         case 'A': /* --rsa-keysize */
             g_free(rsa_keysize_str);
             rsa_keysize_str = strdup(optarg);
+            break;
+        case 'Q':
+            g_free(ecc_curve_str);
+            ecc_curve_str = strdup(optarg);
             break;
         case '3': /* --write-ek-cert-files */
             g_free(user_certsdir);
@@ -1669,6 +1682,17 @@ int main(int argc, char *argv[])
         goto error;
     }
 
+    if (strcmp(ecc_curve_str, "secp256r1") == 0) {
+        ecc_curve = ECC_CURVE_ID_NIST_P256;
+    } 
+    else if (strcmp(ecc_curve_str, "secp384r1") == 0) {
+        ecc_curve = ECC_CURVE_ID_NIST_P384;
+    }
+    else {
+        logit(gl_LOGFILE, "Unsupported ECC curve %s.\n", ecc_curve_str);
+        goto error;
+    }
+
     if (flags & SETUP_RECONFIGURE_F) {
         if (flags & (SETUP_CREATE_EK_F | SETUP_EK_CERT_F | SETUP_PLATFORM_CERT_F)) {
             logerr(gl_LOGFILE, "Reconfiguration is not supported with creation of EK or certificates\n");
@@ -1703,7 +1727,7 @@ int main(int argc, char *argv[])
                        swtpm_keyopt, fds_to_pass, n_fds_to_pass, certsdir, user_certsdir);
     } else {
         ret = init_tpm2(flags, swtpm_prg_l, config_file, tpm_state_path, vmid, pcr_banks,
-                       swtpm_keyopt, fds_to_pass, n_fds_to_pass, rsa_keysize, certsdir,
+                       swtpm_keyopt, fds_to_pass, n_fds_to_pass, rsa_keysize, ecc_curve, certsdir,
                        user_certsdir);
     }
 
